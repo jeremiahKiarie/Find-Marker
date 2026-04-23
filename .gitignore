@@ -1,2 +1,5 @@
 test/
+blender/
 .venv/
+**/__pycache__/
+**/*.pyc    

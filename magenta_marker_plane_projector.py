@@ -54,16 +54,72 @@ def parse_colmap_points3d(file_path):
 # -------------------------
 # Magenta mask helper
 # -------------------------
-def magenta_mask_from_colors_uint8(colors_uint8, threshold):
+def magenta_mask_from_colors_uint8(colors_uint8, saturation_min=0.4, value_min=0.4):
     """
-    Create boolean mask for magenta points based on RGB threshold.
-    Magenta: high R, high B, low G.
+    Create boolean mask for magenta points using HSV color space.
+    Magenta has hue in range 270-330 degrees (or 0.75-0.92 in normalized [0,1]).
+    
+    Args:
+        colors_uint8: Nx3 array of RGB colors (uint8)
+        saturation_min: Minimum saturation threshold (0-1)
+        value_min: Minimum value/brightness threshold (0-1)
+    
+    Returns:
+        Boolean mask for magenta points
     """
-    thr = int(np.clip(threshold * 255.0, 0, 255))
-    r = colors_uint8[:, 0]
-    g = colors_uint8[:, 1]
-    b = colors_uint8[:, 2]
-    return (r > thr) & (b > thr) & (g < thr)
+    from colorsys import rgb_to_hsv
+    
+    # Normalize RGB to [0, 1]
+    rgb_normalized = colors_uint8.astype(np.float32) / 255.0
+    
+    # Convert to HSV
+    hsv = np.zeros_like(rgb_normalized)
+    for i in range(len(rgb_normalized)):
+        h, s, v = rgb_to_hsv(rgb_normalized[i, 0], rgb_normalized[i, 1], rgb_normalized[i, 2])
+        hsv[i] = [h, s, v]
+    
+    h = hsv[:, 0]
+    s = hsv[:, 1]
+    v = hsv[:, 2]
+    
+    # Magenta hue range: 270-330 degrees = 0.75-0.92 in normalized [0,1]
+    # Also include wrap-around from red (~0) to magenta (~0.9)
+    magenta_hue = ((h >= 0.75) & (h <= 0.92)) | ((h >= 0.9) & (h <= 1.0))
+    
+    # High saturation (vivid color, not washed out)
+    high_saturation = s >= saturation_min
+    
+    # Reasonable brightness (not too dark)
+    reasonable_brightness = v >= value_min
+    
+    return magenta_hue & high_saturation & reasonable_brightness
+# def magenta_mask_from_colors_uint8(colors_uint8, threshold):
+#     """
+#     Create boolean mask for magenta points based on RGB threshold.
+#     Magenta: high R, high B, low G.
+#     """
+#     thr = int(np.clip(threshold * 255.0, 0, 255))
+#     r = colors_uint8[:, 0].astype(np.float32)
+#     g = colors_uint8[:, 1].astype(np.float32)
+#     b = colors_uint8[:, 2].astype(np.float32)
+
+#     # Basic thresholds
+#     high_r = r > thr
+#     high_b = b > thr
+#     low_g = g < thr
+
+#     # Additional constraints:
+#     # 1. R and B similarity: normally within 30, relaxed to 50 if min(R,B) > 70
+#     rb_diff = np.abs(r - b)
+#     min_rb = np.minimum(r, b)
+#     rb_similar = np.where(min_rb > 70, rb_diff <= 50, rb_diff <= 30)
+    
+#     # 2. G significantly lower than average of R and B by at least 25
+#     avg_rb = (r + b) / 2.0
+#     g_significantly_lower = g < (avg_rb - 25)
+    
+#     # Combine all conditions
+#     return high_r & high_b & low_g & rb_similar & g_significantly_lower
 
 
 # -------------------------
@@ -95,7 +151,7 @@ def detect_white_points(colors_uint8, threshold=200):
     channel_variance = max_channel - min_channel
     similar_channels = channel_variance < 30  # Allow small variation
     
-    white_mask = high_channels & similar_channels
+    white_mask = high_channels #& similar_channels
     white_indices = np.where(white_mask)[0]
     
     return white_mask, white_indices
@@ -559,10 +615,10 @@ def fit_plane_ransac_deterministic(
             # -----------------------------
             score = (
                 + 0.10 * inlier_ratio
-                - 0.40 * global_balance      # dominant
-                - 0.20 * mag_balance         # dominant (your priority)
-                - 0.15 * transverse_spread
-                - 0.15 * mean_dist
+                #- 0.050 * global_balance     
+                - 0.1 * mag_balance        
+                #- 0.15 * transverse_spread
+                #- 0.15 * mean_dist
             )
 
             # Deterministic tie-break
@@ -872,7 +928,7 @@ def process_magenta_points(file_path, color_threshold=0.3, plane_threshold=0.03,
     
     # Detect white points and compute oriented bounding box
     print("\nDetecting white/light points for region constraint...")
-    white_mask, white_indices = detect_white_points(colors, threshold=230)
+    white_mask, white_indices = detect_white_points(colors, threshold=130)
     white_coords = coords[white_indices] if len(white_indices) > 0 else None
     
     obb = None
@@ -899,7 +955,7 @@ def process_magenta_points(file_path, color_threshold=0.3, plane_threshold=0.03,
     print(f"\nExtracting magenta points from OBB region...")
     color_grid = np.linspace(0.15, 0.5, 8)
     #color_grid = np.linspace(0.20, 0.35, 16)
-    #color_grid = [0.45]
+    #color_grid = [0.15]
 
     best = grid_search_color_threshold(
         ids_in_region,

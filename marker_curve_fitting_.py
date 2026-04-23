@@ -187,9 +187,9 @@ def fit_curve_pca_parametric_3d(
         if smoothing_factor is None:
             smoothing_factor = 10.0
         if prune_radius is None:
-            prune_radius = 0.013
+            prune_radius = 0.01
         if min_neighbors is None:
-            min_neighbors = 2
+            min_neighbors = 4
         if poly_order is None:
             poly_order = 3  # Fallback if neither specified
 
