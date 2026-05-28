@@ -1069,7 +1069,7 @@ def process_magenta_points(file_path, color_threshold=0.3, plane_threshold=0.03,
     if visualize_3d and o3d is not None:
         print("\nLaunching 3D visualization...")
         visualize_3d_magenta_points(coords, colors, mag_coords, plane_normal, plane_point, 
-                                   white_coords=white_coords, obb=obb)
+                                   obb=obb)
     
     print("\n" + "="*60)
     print("PROCESSING COMPLETE")

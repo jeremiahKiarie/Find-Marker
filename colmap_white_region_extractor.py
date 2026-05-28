@@ -57,14 +57,13 @@ def parse_colmap_points3d(file_path):
     
     return np.array(pids, dtype=np.int32), np.array(pts, dtype=np.float32), np.array(cols, dtype=np.uint8)
 
-
 # -------------------------
 # White point detection
 # -------------------------
 def detect_white_points(colors_uint8, threshold=200):
     """
-    Detect white/light points in the point cloud.
-    White points have R, G, B all high and close to each other.
+    Detect white/light points in the point cloud using HSV color space.
+    White points have low saturation and high value in HSV.
     
     Args:
         colors_uint8: Nx3 array of RGB colors (uint8)
@@ -74,24 +73,26 @@ def detect_white_points(colors_uint8, threshold=200):
         white_mask: Boolean mask for white points
         white_indices: Indices of white points
     """
-    r = colors_uint8[:, 0].astype(np.float32)
-    g = colors_uint8[:, 1].astype(np.float32)
-    b = colors_uint8[:, 2].astype(np.float32)
-    
-    # All channels must be high
-    high_channels = (r > threshold) & (g > threshold) & (b > threshold)
-    
-    # Channels must be similar (low variance across RGB)
-    max_channel = np.maximum(np.maximum(r, g), b)
-    min_channel = np.minimum(np.minimum(r, g), b)
-    channel_variance = max_channel - min_channel
-    similar_channels = channel_variance < 30  # Allow small variation
-    
-    white_mask = high_channels #& similar_channels
-    white_indices = np.where(white_mask)[0]
-    
-    return white_mask, white_indices
+    r = colors_uint8[:, 0].astype(np.float32) / 255.0
+    g = colors_uint8[:, 1].astype(np.float32) / 255.0
+    b = colors_uint8[:, 2].astype(np.float32) / 255.0
 
+    # Compute HSV channels manually (vectorised, no cv2 dependency)
+    max_channel = np.maximum(np.maximum(r, g), b)   # V
+    min_channel = np.minimum(np.minimum(r, g), b)
+    delta       = max_channel - min_channel          # chroma
+
+    v = max_channel                                          # Value
+    s = np.where(v > 0, delta / v, 0.0)                     # Saturation
+
+    # White: high Value (bright) and low Saturation (colourless)
+    value_threshold      = threshold / 255.0   # normalise to match threshold units
+    saturation_threshold = 30  / 255.0         # mirrors the original 30-unit tolerance
+
+    white_mask    = (v > value_threshold) & (s < saturation_threshold)
+    white_indices = np.where(white_mask)[0]
+
+    return white_mask, white_indices
 
 def detect_dense_white_obb(all_coords, white_indices, voxel_size=0.05, density_percentile=75):
     """
