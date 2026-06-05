@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """
-magenta_plane_extractor.py
+magenta_marker_plane_projector.py
 
 Extracts magenta points from COLMAP point cloud, fits RANSAC plane,
 projects points onto plane, and generates comprehensive outputs.
 
-Usage:
-    python magenta_plane_extractor.py --file points3D.txt --color-threshold 0.3 --plane-threshold 0.03
 """
 import argparse
 import numpy as np
@@ -84,8 +82,9 @@ def magenta_mask_from_colors_uint8(colors_uint8, saturation_min=0.4, value_min=0
     
     # Magenta hue range: 270-330 degrees = 0.75-0.92 in normalized [0,1]
     # Also include wrap-around from red (~0) to magenta (~0.9)
-    magenta_hue = ((h >= 0.75) & (h <= 0.92)) | ((h >= 0.9) & (h <= 1.0))
-    
+    #magenta_hue = ((h >= 0.75) & (h <= 0.92)) | ((h >= 0.9) & (h <= 1.0))
+    magenta_hue = ((h >= 0.75) & (h <= 0.92)) 
+
     # High saturation (vivid color, not washed out)
     high_saturation = s >= saturation_min
     
@@ -93,33 +92,7 @@ def magenta_mask_from_colors_uint8(colors_uint8, saturation_min=0.4, value_min=0
     reasonable_brightness = v >= value_min
     
     return magenta_hue & high_saturation & reasonable_brightness
-# def magenta_mask_from_colors_uint8(colors_uint8, threshold):
-#     """
-#     Create boolean mask for magenta points based on RGB threshold.
-#     Magenta: high R, high B, low G.
-#     """
-#     thr = int(np.clip(threshold * 255.0, 0, 255))
-#     r = colors_uint8[:, 0].astype(np.float32)
-#     g = colors_uint8[:, 1].astype(np.float32)
-#     b = colors_uint8[:, 2].astype(np.float32)
 
-#     # Basic thresholds
-#     high_r = r > thr
-#     high_b = b > thr
-#     low_g = g < thr
-
-#     # Additional constraints:
-#     # 1. R and B similarity: normally within 30, relaxed to 50 if min(R,B) > 70
-#     rb_diff = np.abs(r - b)
-#     min_rb = np.minimum(r, b)
-#     rb_similar = np.where(min_rb > 70, rb_diff <= 50, rb_diff <= 30)
-    
-#     # 2. G significantly lower than average of R and B by at least 25
-#     avg_rb = (r + b) / 2.0
-#     g_significantly_lower = g < (avg_rb - 25)
-    
-#     # Combine all conditions
-#     return high_r & high_b & low_g & rb_similar & g_significantly_lower
 
 
 # -------------------------
@@ -310,141 +283,82 @@ def grid_search_color_threshold(
     plane_iterations
 ):
     """
-    Perform grid search over color thresholds.
-    Finds the first significant peak in the inlier distribution.
+    Perform 2D Cartesian product grid search over saturation and brightness.
+    Tests all combinations: for each S in color_thresholds, for each V in color_thresholds.
+    This creates a full 2D exploration without overlapping parameter regions.
+    
+    Returns best (S, V) pair based on maximum inlier count.
     """
-    from scipy.interpolate import UnivariateSpline
-    from scipy.signal import find_peaks
-
     best_result = None
     all_results = []
 
-    print("\nRunning color-threshold grid search...")
+    n_thresholds = len(color_thresholds)
+    total_evaluations = n_thresholds * n_thresholds
+
+    print("\nRunning 2D Cartesian product grid search...")
+    print(f"  Saturation (S) values:  {n_thresholds}")
+    print(f"  Brightness (V) values:  {n_thresholds}")
+    print(f"  Total evaluations:      {total_evaluations}")
     print("-" * 60)
 
-    for ct in color_thresholds:
-        ok, res = evaluate_color_threshold(
-            ids, coords, colors,
-            color_threshold=ct,
-            plane_threshold=plane_threshold,
-            plane_iterations=plane_iterations
-        )
+    # Cartesian product: test all (S, V) combinations
+    for s_thresh in color_thresholds:
+        for v_thresh in color_thresholds:
+            # Apply magenta mask with current (S, V) pair
+            mask = magenta_mask_from_colors_uint8(colors, s_thresh, v_thresh)
+            mag_idx = np.nonzero(mask)[0]
 
-        if not ok:
-            print(f"  ct={ct:.3f} -> rejected")
-            continue
+            if len(mag_idx) < 3:
+                continue
 
-        print(
-            f"  ct={ct:.3f} | magenta={res['num_magenta']} "
-            f"| inliers={res['num_inliers']} "
-            f"| ratio={res['inlier_ratio']:.3f}"
-        )
+            mag_coords = coords[mag_idx]
 
-        all_results.append(res)
+            # Plane RANSAC
+            plane_normal, plane_point, plane_inliers = fit_plane_ransac(
+                mag_coords,
+                threshold=plane_threshold,
+                max_iterations=plane_iterations
+            )
+
+            if plane_normal is None or len(plane_inliers) < 3:
+                continue
+
+            res = {
+                "saturation_min": s_thresh,
+                "brightness_min": v_thresh,
+                "num_magenta": len(mag_coords),
+                "num_inliers": len(plane_inliers),
+                "inlier_ratio": len(plane_inliers) / len(mag_coords),
+                "plane_normal": plane_normal,
+                "plane_point": plane_point,
+                "plane_inliers": plane_inliers,
+                "mag_idx": mag_idx
+            }
+
+            print(
+                f"  S={s_thresh:.2f}, V={v_thresh:.2f} | "
+                f"magenta={res['num_magenta']:4d} | "
+                f"inliers={res['num_inliers']:4d} | "
+                f"ratio={res['inlier_ratio']:.3f}"
+            )
+
+            all_results.append(res)
 
     if not all_results:
         return None
 
-    if len(all_results) < 3:
-        # Not enough points to fit a curve, fall back to max inliers
-        best_result = max(all_results, key=lambda r: (r['num_inliers'], r['inlier_ratio']))
-        return best_result
-
-    # Extract data for analysis
-    ct_values = np.array([r['color_threshold'] for r in all_results])
-    inlier_counts = np.array([r['num_inliers'] for r in all_results])
-    ratios = np.array([r['inlier_ratio'] for r in all_results])
+    # Find best result (maximum inliers)
+    best_result = max(all_results, key=lambda r: (r['num_inliers'], r['inlier_ratio']))
     
-    # Define significance thresholds
-    max_inliers = np.max(inlier_counts)
-    min_significant_inliers = max(30, max_inliers * 0.1)  # At least 10% of max or 30
-    min_significant_ratio = 0.85  # Require good quality fit
+    peak_s = best_result['saturation_min']
+    peak_v = best_result['brightness_min']
+    peak_inliers = best_result['num_inliers']
+    peak_ratio = best_result['inlier_ratio']
     
-    # Filter for significant results only
-    significant_mask = (inlier_counts >= min_significant_inliers) & (ratios >= min_significant_ratio)
-    
-    if not np.any(significant_mask):
-        # No high-quality results, relax ratio requirement
-        print("\n  No results meet quality threshold (ratio>=0.85), relaxing criteria")
-        min_significant_ratio = 0.5
-        significant_mask = (inlier_counts >= min_significant_inliers) & (ratios >= min_significant_ratio)
-    
-    if not np.any(significant_mask):
-        # Still nothing, just use all data
-        print("\n  Using all results for peak detection")
-        significant_mask = np.ones(len(all_results), dtype=bool)
-    
-    # Get indices of significant results
-    significant_indices = np.where(significant_mask)[0]
-    
-    if len(significant_indices) == 0:
-        # Fallback
-        best_result = max(all_results, key=lambda r: (r['num_inliers'], r['inlier_ratio']))
-        return best_result
-    
-    # Try curve fitting on significant results only
-    try:
-        ct_sig = ct_values[significant_mask]
-        inliers_sig = inlier_counts[significant_mask]
-        
-        if len(ct_sig) < 3:
-            # Not enough points for spline, use simple local maximum
-            print("\n  Too few significant points for curve fitting, using local maximum")
-            best_result = _find_first_local_maximum_filtered(all_results, min_significant_inliers, min_significant_ratio)
-            return best_result
-        
-        # Fit spline with appropriate smoothing
-        spline = UnivariateSpline(ct_sig, inliers_sig, s=len(ct_sig)*50, k=min(3, len(ct_sig)-1))
-        
-        # Generate fine-grained points for peak detection
-        ct_fine = np.linspace(ct_sig.min(), ct_sig.max(), 200)
-        inliers_fine = spline(ct_fine)
-        
-        # Find peaks with prominence requirement (peak must be significant)
-        min_prominence = max(50, max_inliers * 0.05)  # At least 5% of max inliers
-        peaks, properties = find_peaks(inliers_fine, prominence=min_prominence)
-        
-        if len(peaks) > 0:
-            # Take the first significant peak
-            first_peak_idx = peaks[0]
-            projected_ct = ct_fine[first_peak_idx]
-            projected_inliers = inliers_fine[first_peak_idx]
-            
-            print(f"\n  Projected first peak at ct={projected_ct:.3f} (expected ~{projected_inliers:.0f} inliers)")
-            
-            # Evaluate at the projected ct value
-            ok, projected_result = evaluate_color_threshold(
-                ids, coords, colors,
-                color_threshold=projected_ct,
-                plane_threshold=plane_threshold,
-                plane_iterations=plane_iterations
-            )
-            
-            if ok:
-                # Verify the projected result is actually significant
-                if (projected_result['num_inliers'] >= min_significant_inliers and 
-                    projected_result['inlier_ratio'] >= min_significant_ratio):
-                    print(
-                        f"  Projected result: magenta={projected_result['num_magenta']} "
-                        f"| inliers={projected_result['num_inliers']} "
-                        f"| ratio={projected_result['inlier_ratio']:.3f}"
-                    )
-                    best_result = projected_result
-                else:
-                    print(f"  Projected result doesn't meet significance criteria, using grid maximum")
-                    best_result = _find_first_local_maximum_filtered(all_results, min_significant_inliers, min_significant_ratio)
-            else:
-                # If projected ct fails, find closest valid significant result
-                print(f"  Projected ct failed, using closest significant result")
-                best_result = _find_first_local_maximum_filtered(all_results, min_significant_inliers, min_significant_ratio)
-        else:
-            # No peaks found in smoothed curve
-            print("\n  No significant peaks in smoothed curve, using local maximum")
-            best_result = _find_first_local_maximum_filtered(all_results, min_significant_inliers, min_significant_ratio)
-            
-    except Exception as e:
-        print(f"\n  Curve fitting failed ({e}), falling back to local maximum")
-        best_result = _find_first_local_maximum_filtered(all_results, min_significant_inliers, min_significant_ratio)
+    print(
+        f"\n  Peak found at S={peak_s:.2f}, V={peak_v:.2f} with "
+        f"{peak_inliers} inliers (ratio={peak_ratio:.3f})"
+    )
 
     return best_result
 
@@ -570,8 +484,8 @@ def fit_plane_ransac_deterministic(
             d_all = (pts_all - point) @ normal
             eps = 0.5 * thresh
 
-            N_pos = np.sum(d_all > eps)
-            N_neg = np.sum(d_all < -eps)
+            N_pos = np.sum(d_all >= 0)
+            N_neg = np.sum(d_all < 0)
 
             if N_pos == 0 or N_neg == 0:
                 continue
@@ -584,8 +498,8 @@ def fit_plane_ransac_deterministic(
             pts_in = pts_magenta[inliers]
             d_mag = (pts_in - point) @ normal
 
-            M_pos = np.sum(d_mag > eps)
-            M_neg = np.sum(d_mag < -eps)
+            M_pos = np.sum(d_mag >= 0)
+            M_neg = np.sum(d_mag < 0)
 
             mag_balance = abs(M_pos - M_neg) / max(M_pos + M_neg, 1)
 
@@ -614,11 +528,11 @@ def fit_plane_ransac_deterministic(
             # Final score (geometry-first)
             # -----------------------------
             score = (
-                + 0.10 * inlier_ratio
-                #- 0.050 * global_balance     
-                - 0.1 * mag_balance        
-                #- 0.15 * transverse_spread
-                #- 0.15 * mean_dist
+                + 0.40 * inlier_ratio
+                + 0.20 * (1-global_balance)     
+                + 0.25 * (1-mag_balance)        
+                + 0.05 * (1-transverse_spread)
+                + 0.1 * (1-mean_dist)
             )
 
             # Deterministic tie-break
@@ -928,7 +842,7 @@ def process_magenta_points(file_path, color_threshold=0.3, plane_threshold=0.03,
     
     # Detect white points and compute oriented bounding box
     print("\nDetecting white/light points for region constraint...")
-    white_mask, white_indices = detect_white_points(colors, threshold=130)
+    white_mask, white_indices = detect_white_points(colors, threshold=230)
     white_coords = coords[white_indices] if len(white_indices) > 0 else None
     
     obb = None
@@ -954,7 +868,7 @@ def process_magenta_points(file_path, color_threshold=0.3, plane_threshold=0.03,
     # Extract magenta points via grid search over color thresholds (within OBB region)
     print(f"\nExtracting magenta points from OBB region...")
     color_grid = np.linspace(0.15, 0.5, 8)
-    #color_grid = np.linspace(0.20, 0.35, 16)
+    #color_grid = np.linspace(0.10, 0.25, 16)
     #color_grid = [0.15]
 
     best = grid_search_color_threshold(
@@ -971,14 +885,14 @@ def process_magenta_points(file_path, color_threshold=0.3, plane_threshold=0.03,
         return None
 
     # Use best parameters from grid search
-    color_threshold = best["color_threshold"]
     mag_idx_in_region = best["mag_idx"]
     
     # Map indices back to original array
     mag_idx = obb_indices[mag_idx_in_region] if obb_indices is not None else mag_idx_in_region
 
-    print("\nSelected best color threshold:")
-    print(f"  color_threshold = {color_threshold}")
+    print("\nSelected best color thresholds (2D Cartesian product):")
+    print(f"  saturation_min  = {best['saturation_min']:.2f}")
+    print(f"  brightness_min  = {best['brightness_min']:.2f}")
     print(f"  magenta points  = {best['num_magenta']}")
     print(f"  plane inliers   = {best['num_inliers']}")
 
