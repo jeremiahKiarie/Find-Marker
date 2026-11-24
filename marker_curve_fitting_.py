@@ -189,7 +189,7 @@ def fit_curve_pca_parametric_3d(
         if prune_radius is None:
             prune_radius = 0.01
         if min_neighbors is None:
-            min_neighbors = 4
+            min_neighbors = 6
         if poly_order is None:
             poly_order = 3  # Fallback if neither specified
 
