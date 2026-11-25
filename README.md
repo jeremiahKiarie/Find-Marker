@@ -123,3 +123,6 @@ These output files are overwritten when the corresponding scripts are run again 
 - `magenta_marker_plane_projector.py` — extract magenta points, fit a plane, and create projected point data.
 - `marker_curve_fitting_.py` — fit a 3D curve to marker points and report its arc length.
 
+## Test data
+You can find test data output from the marker detection and curve-fitting pipeline in the `Test Data` folder. The data is organized into subfolders for each test case.
+
